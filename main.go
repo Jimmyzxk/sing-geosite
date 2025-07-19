@@ -1,3 +1,4 @@
+// main.go (已重构，适配现代 GitHub Actions)
 package main
 
 import (
@@ -5,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -66,10 +68,10 @@ func download(release *github.RepositoryRelease) ([]byte, error) {
 		return *it.Name == "dlc.dat.sha256sum"
 	})
 	if geositeAsset == nil {
-		return nil, E.New("geosite asset not found in upstream release ", release.Name)
+		return nil, E.New("geosite asset not found in upstream release ", *release.Name)
 	}
 	if geositeChecksumAsset == nil {
-		return nil, E.New("geosite asset not found in upstream release ", release.Name)
+		return nil, E.New("geosite asset checksum not found in upstream release ", *release.Name)
 	}
 	data, err := get(geositeAsset.BrowserDownloadURL)
 	if err != nil {
@@ -236,8 +238,8 @@ func filterTags(data map[string][]geosite.Item) {
 	}
 	sort.Strings(filteredCodeMap)
 	sort.Strings(mergedCodeMap)
-	os.Stderr.WriteString("filtered " + strings.Join(filteredCodeMap, ",") + "\n")
-	os.Stderr.WriteString("merged " + strings.Join(mergedCodeMap, ",") + "\n")
+	fmt.Fprintln(os.Stderr, "filtered "+strings.Join(filteredCodeMap, ","))
+	fmt.Fprintln(os.Stderr, "merged "+strings.Join(mergedCodeMap, ","))
 }
 
 func mergeTags(data map[string][]geosite.Item) {
@@ -292,7 +294,7 @@ func mergeTags(data map[string][]geosite.Item) {
 		Type:  geosite.RuleTypeDomainSuffix,
 		Value: "cn",
 	})
-	println("merged cn categories: " + strings.Join(cnCodeList, ","))
+	fmt.Fprintln(os.Stderr, "merged cn categories: "+strings.Join(cnCodeList, ","))
 }
 
 func generate(release *github.RepositoryRelease, output string, cnOutput string, ruleSetOutput string, ruleSetUnstableOutput string) error {
@@ -307,7 +309,7 @@ func generate(release *github.RepositoryRelease, output string, cnOutput string,
 	filterTags(domainMap)
 	mergeTags(domainMap)
 	outputPath, _ := filepath.Abs(output)
-	os.Stderr.WriteString("write " + outputPath + "\n")
+	fmt.Fprintln(os.Stderr, "write "+outputPath)
 	outputFile, err := os.Create(output)
 	if err != nil {
 		return err
@@ -366,7 +368,6 @@ func generate(release *github.RepositoryRelease, output string, cnOutput string,
 		}
 		srsPath, _ := filepath.Abs(filepath.Join(ruleSetOutput, "geosite-"+code+".srs"))
 		unstableSRSPath, _ := filepath.Abs(filepath.Join(ruleSetUnstableOutput, "geosite-"+code+".srs"))
-		// os.Stderr.WriteString("write " + srsPath + "\n")
 		var (
 			outputRuleSet         *os.File
 			outputRuleSetUnstable *os.File
@@ -393,35 +394,33 @@ func generate(release *github.RepositoryRelease, output string, cnOutput string,
 	return nil
 }
 
-func setActionOutput(name string, content string) {
-	os.Stdout.WriteString("::set-output name=" + name + "::" + content + "\n")
-}
-
-func release(source string, destination string, output string, cnOutput string, ruleSetOutput string, ruleSetOutputUnstable string) error {
+// release 函数现在返回决策结果，而不是直接打印
+// 返回值: (是否跳过, 新的标签名, 错误)
+func release(source string, destination string, output string, cnOutput string, ruleSetOutput string, ruleSetOutputUnstable string) (bool, string, error) {
 	sourceRelease, err := fetch(source)
 	if err != nil {
-		return err
+		return false, "", err
 	}
 	destinationRelease, err := fetch(destination)
 	if err != nil {
-		log.Warn("missing destination latest release")
+		log.Warn("missing destination latest release, proceeding...")
 	} else {
 		if os.Getenv("NO_SKIP") != "true" && strings.Contains(*destinationRelease.Name, *sourceRelease.Name) {
 			log.Info("already latest")
-			setActionOutput("skip", "true")
-			return nil
+			return true, "", nil // 返回: 跳过=true, tag="", 无错误
 		}
 	}
 	err = generate(sourceRelease, output, cnOutput, ruleSetOutput, ruleSetOutputUnstable)
 	if err != nil {
-		return err
+		return false, "", err
 	}
-	setActionOutput("tag", *sourceRelease.Name)
-	return nil
+	// 返回: 跳过=false, tag=新的标签名, 无错误
+	return false, *sourceRelease.Name, nil
 }
 
 func main() {
-	err := release(
+	// 调用 release 并接收返回的决策结果
+	skip, tag, err := release(
 		"v2fly/domain-list-community",
 		"sagernet/sing-geosite",
 		"geosite.db",
@@ -432,4 +431,34 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	// 检查 GITHUB_OUTPUT 环境变量是否存在
+	outputFilePath, ok := os.LookupEnv("GITHUB_OUTPUT")
+	if !ok {
+		log.Info("GITHUB_OUTPUT not set. This is normal for local runs. Skipping output.")
+		if skip {
+			log.Info("Decision: Skip")
+		} else {
+			log.Infof("Decision: Proceed with tag '%s'", tag)
+		}
+		return
+	}
+
+	// 以追加模式打开 GITHUB_OUTPUT 文件
+	file, err := os.OpenFile(outputFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatalf("failed to open GITHUB_OUTPUT file: %v", err)
+	}
+	defer file.Close()
+
+	// 将决策结果以 key=value 格式写入文件
+	if _, err := fmt.Fprintf(file, "skip=%t\n", skip); err != nil {
+		log.Fatalf("failed to write 'skip' to GITHUB_OUTPUT: %v", err)
+	}
+	if !skip {
+		if _, err := fmt.Fprintf(file, "tag=%s\n", tag); err != nil {
+			log.Fatalf("failed to write 'tag' to GITHUB_OUTPUT: %v", err)
+		}
+	}
+	log.Info("Successfully wrote outputs to GITHUB_OUTPUT.")
 }
