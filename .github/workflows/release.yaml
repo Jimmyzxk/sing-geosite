@@ -1,10 +1,18 @@
 # .github/workflows/release.yml
-# 最终的、稳健的工作流（已移除失效的第三方Action）
+# 最终的、稳健的、带手动触发选项的工作流
 
 name: Build and Release Geosite
 
 on:
+  # 手动触发选项
   workflow_dispatch:
+    inputs:
+      force_run:
+        description: 'Force run even if already up-to-date?'
+        type: boolean
+        required: true
+        default: false
+  # 定时触发
   schedule:
     - cron: "0 0 * * *"
 
@@ -13,7 +21,7 @@ jobs:
     name: Build and Release
     runs-on: ubuntu-latest
     permissions:
-      contents: write # 需要权限来创建Release和推送更新
+      contents: write
 
     steps:
       - name: Checkout Repository
@@ -24,12 +32,13 @@ jobs:
         with:
           go-version: '^1.22'
       
-      # 步骤 1: 运行智能的Go程序
       - name: Build geosite and Generate Outputs
         id: build
+        # 在手动触发时，将用户的选择作为 NO_SKIP 环境变量传给Go程序
+        env:
+          NO_SKIP: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force_run == 'true' }}
         run: go run .
 
-      # 步骤 2: 根据Go程序的决策结果，执行后续操作
       - name: Commit and Push Rule Set Updates
         if: steps.build.outputs.skip != 'true'
         run: .github/release-rule-set.sh
@@ -48,26 +57,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # --- 这里是全新的、可靠的步骤 ---
       - name: Delete Older Releases using GitHub CLI
         if: steps.build.outputs.skip != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # GITHUB_REPOSITORY 是一个内置变量，例如 "Jimmyzxk/sing-geosite"
           GH_REPO: ${{ github.repository }} 
         run: |
-          echo "Fetching releases to delete..."
-          # 1. 列出所有 releases (最多100个)，按创建时间倒序
-          # 2. 用 `tail -n +11` 跳过最新的10个
-          # 3. 提取出 tag name
-          # 4. 循环遍历并删除
           gh release list --limit 100 --json tagName --jq '.[].tagName' | \
             tail -n +11 | \
             xargs -I {} gh release delete {} --cleanup-tag --yes
-            
-          echo "Old releases have been deleted."
 
-      # 步骤 3: 创建新的 GitHub Release
       - name: Create New GitHub Release
         if: steps.build.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
