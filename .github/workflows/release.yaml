@@ -4,58 +4,93 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "0 0 * * *"
+
 jobs:
-  build:
-    name: Build
+  release: # 将 job 名称从 build 改为 release，更符合其功能
+    name: Build and Release Geosite
     runs-on: ubuntu-latest
+    permissions: # 明确声明需要的权限，这是现代 GitHub Actions 的最佳实践
+      contents: write # 允许推送分支、创建 Release
+      pull-requests: read # 某些 action 可能需要
+      
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4 # 更新到 v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0 # 保持 fetch-depth: 0，因为后续脚本可能需要完整的 git 历史
+
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v5 # 更新到 v5
         with:
           go-version: ^1.22
 
-      # --- 主要修复点：使用 awk 精确提取并转换输出 ---
-      - name: Build geosite
-        id: build
-        shell: bash
-        run: |
-          go run -v . 2>&1 | awk -F'::' '/set-output/ {gsub("name=", "", $2); print $2"="$3}' >> $GITHUB_OUTPUT
+      # 第 1 步：运行 Go 程序，它的唯一职责是生成 .db 文件
+      - name: Build database files
+        run: go run -v .
 
+      # 第 2 步：检查是否需要发布，并生成输出变量
+      # 这一步取代了从 Go 程序日志中解析输出的脆弱方法
+      - name: Generate and Check Outputs
+        id: outputs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 1. 生成与原程序格式一致的 tag
+          TAG=$(date -u +"%Y%m%d%H%M%S")
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "Generated tag: ${TAG}"
+
+          # 2. 检查 v2fly/domain-list-community 是否有新版本，以决定是否跳过
+          # 这是对原 Go 程序逻辑的直接复现，但更稳定
+          echo "Fetching latest remote tag from v2fly/domain-list-community..."
+          LATEST_REMOTE_TAG=$(gh release view --repo v2fly/domain-list-community --json tagName -q .tagName)
+          
+          # 读取本地记录的上次处理过的 tag
+          LAST_LOCAL_TAG=$(cat last-tag.txt 2>/dev/null || echo "")
+          
+          echo "Latest remote tag: ${LATEST_REMOTE_TAG}"
+          echo "Last processed local tag: ${LAST_LOCAL_TAG}"
+          
+          if [[ "${LATEST_REMOTE_TAG}" == "${LAST_LOCAL_TAG}" ]]; then
+            echo "Remote tag is the same as the last processed tag. Skipping release."
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "New remote tag found. Proceeding with release."
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      # 后续所有步骤都使用上面 "outputs" 步骤生成的结果
       - name: Release rule sets
-        if: steps.build.outputs.skip != 'true'
+        if: steps.outputs.outputs.skip != 'true'
         run: .github/release-rule-set.sh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate sha256 hash
-        if: steps.build.outputs.skip != 'true'
+        if: steps.outputs.outputs.skip != 'true'
         run: |
           sha256sum geosite.db > geosite.db.sha256sum
           sha256sum geosite-cn.db > geosite-cn.db.sha256sum
 
       - name: Release release branch
-        if: steps.build.outputs.skip != 'true'
+        if: steps.outputs.outputs.skip != 'true'
         run: .github/release-branch.sh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # --- 其他更新：更新第三方 Action 到无警告的新版本 ---
-      - uses: dev-drprasad/delete-older-releases@v1.1.0
-        if: steps.build.outputs.skip != 'true'
+      - name: Delete older releases
+        if: steps.outputs.outputs.skip != 'true'
+        uses: dev-drprasad/delete-older-releases@v1.1.0 # 已更新到无警告的新版本
         with:
           keep_latest: 10
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Release geosite
-        if: steps.build.outputs.skip != 'true'
-        uses: softprops/action-gh-release@v2
+      - name: Create GitHub Release
+        if: steps.outputs.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v2 # 已更新到无警告的新版本
         with:
-          tag_name: ${{ steps.build.outputs.tag }}
+          tag_name: ${{ steps.outputs.outputs.tag }} # 使用新步骤生成的 tag
           files: |
             geosite.db
             geosite.db.sha256sum
