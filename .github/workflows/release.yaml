@@ -1,10 +1,9 @@
 # .github/workflows/release.yml
-# 最终的、稳健的、带手动触发选项的工作流
+# 最终的、完全校准的工作流
 
 name: Build and Release Geosite
 
 on:
-  # 手动触发选项
   workflow_dispatch:
     inputs:
       force_run:
@@ -12,7 +11,6 @@ on:
         type: boolean
         required: true
         default: false
-  # 定时触发
   schedule:
     - cron: "0 0 * * *"
 
@@ -34,16 +32,17 @@ jobs:
       
       - name: Build geosite and Generate Outputs
         id: build
-        # 在手动触发时，将用户的选择作为 NO_SKIP 环境变量传给Go程序
         env:
           NO_SKIP: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force_run == 'true' }}
         run: go run .
 
+      # 将当前仓库地址 (例如 "Jimmyzxk/sing-geosite") 传给脚本
       - name: Commit and Push Rule Set Updates
         if: steps.build.outputs.skip != 'true'
         run: .github/release-rule-set.sh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }} 
 
       - name: Generate SHA256 Hashes
         if: steps.build.outputs.skip != 'true'
@@ -51,11 +50,13 @@ jobs:
           sha256sum geosite.db > geosite.db.sha256sum
           sha256sum geosite-cn.db > geosite-cn.db.sha256sum
 
+      # 将当前仓库地址传给脚本
       - name: Commit and Push Branch Updates
         if: steps.build.outputs.skip != 'true'
         run: .github/release-branch.sh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
 
       - name: Delete Older Releases using GitHub CLI
         if: steps.build.outputs.skip != 'true'
