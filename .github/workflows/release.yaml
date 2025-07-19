@@ -1,96 +1,129 @@
 # .github/workflows/release.yml
-name: Release
+# 全新重构的工作流，遵循现代CI/CD最佳实践
+# 作者：AI Assistant
+# 日期：2024-06-28
+
+name: Build and Release Geosite
+
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 允许手动触发
   schedule:
-    - cron: "0 0 * * *"
+    - cron: "0 0 * * *" # 每天0点定时执行
 
 jobs:
-  release: # 将 job 名称从 build 改为 release，更符合其功能
-    name: Build and Release Geosite
+  release:
+    name: Build and Release
     runs-on: ubuntu-latest
-    permissions: # 明确声明需要的权限，这是现代 GitHub Actions 的最佳实践
-      contents: write # 允许推送分支、创建 Release
-      pull-requests: read # 某些 action 可能需要
-      
+    # 明确声明工作流所需要的权限，这是安全最佳实践
+    permissions:
+      contents: write # 需要写入权限来：创建Release、推送分支/标签
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4 # 更新到 v4
+      # 步骤 1: 检出代码
+      - name: Checkout Repository
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # 保持 fetch-depth: 0，因为后续脚本可能需要完整的 git 历史
+          # 需要完整的历史记录来比较提交和标签
+          fetch-depth: 0
 
-      - name: Setup Go
-        uses: actions/setup-go@v5 # 更新到 v5
+      # 步骤 2: 安装 Go 环境
+      - name: Setup Go Environment
+        uses: actions/setup-go@v5
         with:
-          go-version: ^1.22
+          go-version: '^1.22'
 
-      # 第 1 步：运行 Go 程序，它的唯一职责是生成 .db 文件
-      - name: Build database files
-        run: go run -v .
-
-      # 第 2 步：检查是否需要发布，并生成输出变量
-      # 这一步取代了从 Go 程序日志中解析输出的脆弱方法
-      - name: Generate and Check Outputs
-        id: outputs
+      # 步骤 3: 决策 - 是否需要创建新版本？
+      # 这是新的核心决策步骤，取代了原Go程序的逻辑
+      - name: Decide if a New Release is Needed
+        id: decision
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 1. 生成与原程序格式一致的 tag
-          TAG=$(date -u +"%Y%m%d%H%M%S")
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "Generated tag: ${TAG}"
+          echo "### Deciding whether to proceed ###"
 
-          # 2. 检查 v2fly/domain-list-community 是否有新版本，以决定是否跳过
-          # 这是对原 Go 程序逻辑的直接复现，但更稳定
-          echo "Fetching latest remote tag from v2fly/domain-list-community..."
-          LATEST_REMOTE_TAG=$(gh release view --repo v2fly/domain-list-community --json tagName -q .tagName)
-          
-          # 读取本地记录的上次处理过的 tag
-          LAST_LOCAL_TAG=$(cat last-tag.txt 2>/dev/null || echo "")
-          
-          echo "Latest remote tag: ${LATEST_REMOTE_TAG}"
-          echo "Last processed local tag: ${LAST_LOCAL_TAG}"
-          
-          if [[ "${LATEST_REMOTE_TAG}" == "${LAST_LOCAL_TAG}" ]]; then
-            echo "Remote tag is the same as the last processed tag. Skipping release."
+          # 1. 获取上游 v2fly/domain-list-community 的最新 release tag
+          # 我们使用 GitHub CLI (gh)，它在所有 runner 上都已预装
+          echo "Fetching latest tag from upstream (v2fly/domain-list-community)..."
+          REMOTE_TAG=$(gh release view --repo v2fly/domain-list-community --json tagName --jq .tagName)
+          if [ -z "$REMOTE_TAG" ]; then
+            echo "::error::Failed to fetch remote tag from v2fly/domain-list-community. Aborting."
+            exit 1
+          fi
+          echo "Latest upstream tag: ${REMOTE_TAG}"
+          # 将其设置为输出，以便后续步骤使用
+          echo "remote_tag=${REMOTE_TAG}" >> $GITHUB_OUTPUT
+
+          # 2. 读取本地记录的、我们上次处理过的 tag
+          # 如果文件不存在，则默认为空字符串
+          LOCAL_TAG=$(cat last-tag.txt 2>/dev/null || echo "")
+          echo "Last processed tag (from last-tag.txt): ${LOCAL_TAG}"
+
+          # 3. 比较两个 tag，决定是否跳过
+          if [[ "${REMOTE_TAG}" == "${LOCAL_TAG}" ]]; then
+            echo "Upstream has no new release. Skipping the rest of the job."
             echo "skip=true" >> $GITHUB_OUTPUT
           else
-            echo "New remote tag found. Proceeding with release."
+            echo "New upstream release detected! Proceeding with build and release."
             echo "skip=false" >> $GITHUB_OUTPUT
+            # 生成用于本次发布的新标签名
+            RELEASE_TAG=$(date -u +"%Y%m%d%H%M%S")
+            echo "Generated new release tag for this job: ${RELEASE_TAG}"
+            echo "release_tag=${RELEASE_TAG}" >> $GITHUB_OUTPUT
           fi
+      
+      # 步骤 4: 执行构建 - 仅当决策步骤决定不跳过时运行
+      # Go程序现在是一个纯粹的工具，通过环境变量接收上游tag
+      - name: Build Database Files
+        if: steps.decision.outputs.skip == 'false'
+        env:
+          # 将我们找到的最新上游tag作为环境变量传给Go程序
+          # Go程序会用它来更新 last-tag.txt
+          V2FLY_TAG: ${{ steps.decision.outputs.remote_tag }}
+        run: |
+          echo "Running Go build process with upstream tag: $V2FLY_TAG"
+          go run -v .
 
-      # 后续所有步骤都使用上面 "outputs" 步骤生成的结果
-      - name: Release rule sets
-        if: steps.outputs.outputs.skip != 'true'
+      # 步骤 5: 生成文件的哈希值
+      - name: Generate SHA256 Hashes
+        if: steps.decision.outputs.skip == 'false'
+        run: |
+          echo "Generating SHA256 checksums..."
+          sha256sum geosite.db > geosite.db.sha256sum
+          sha256sum geosite-cn.db > geosite-cn.db.sha256sum
+          cat geosite.db.sha256sum
+          cat geosite-cn.db.sha256sum
+
+      # 步骤 6: 提交并推送更新
+      # 这两个脚本负责将 last-tag.txt 和其他更新提交回你的仓库
+      - name: Commit and Push Rule Set Updates
+        if: steps.decision.outputs.skip == 'false'
         run: .github/release-rule-set.sh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate sha256 hash
-        if: steps.outputs.outputs.skip != 'true'
-        run: |
-          sha256sum geosite.db > geosite.db.sha256sum
-          sha256sum geosite-cn.db > geosite-cn.db.sha256sum
-
-      - name: Release release branch
-        if: steps.outputs.outputs.skip != 'true'
+      - name: Commit and Push Branch Updates
+        if: steps.decision.outputs.skip == 'false'
         run: .github/release-branch.sh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Delete older releases
-        if: steps.outputs.outputs.skip != 'true'
-        uses: dev-drprasad/delete-older-releases@v1.1.0 # 已更新到无警告的新版本
+      # 步骤 7: 清理旧的 Release，保留最新的10个
+      - name: Delete Older Releases
+        if: steps.decision.outputs.skip == 'false'
+        uses: dev-drprasad/delete-older-releases@v1.1.0
         with:
           keep_latest: 10
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create GitHub Release
-        if: steps.outputs.outputs.skip != 'true'
-        uses: softprops/action-gh-release@v2 # 已更新到无警告的新版本
+      # 步骤 8: 创建新的 GitHub Release
+      - name: Create New GitHub Release
+        if: steps.decision.outputs.skip == 'false'
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.outputs.outputs.tag }} # 使用新步骤生成的 tag
+          # 使用我们在决策步骤中生成的标签
+          tag_name: ${{ steps.decision.outputs.release_tag }}
+          # 附加所有需要发布的文件
           files: |
             geosite.db
             geosite.db.sha256sum
