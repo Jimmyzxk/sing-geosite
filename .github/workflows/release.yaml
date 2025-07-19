@@ -17,36 +17,43 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ^1.22
-      # --- 这是最终的、经过修正的步骤 ---
+
+      # --- 修复点 1: 转换Go程序的输出 ---
       - name: Build geosite
         id: build
         run: |
           go run -v . 2>&1 | sed 's/^::set-output name=\(.*\)::\(.*\)$/\1=\2/' >> $GITHUB_OUTPUT
-      # --- 后续步骤无需任何改动 ---
+
       - name: Release rule sets
         if: steps.build.outputs.skip != 'true'
         run: .github/release-rule-set.sh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Generate sha256 hash
         if: steps.build.outputs.skip != 'true'
         run: |
           sha256sum geosite.db > geosite.db.sha256sum
           sha256sum geosite-cn.db > geosite-cn.db.sha256sum
+
       - name: Release release branch
         if: steps.build.outputs.skip != 'true'
         run: .github/release-branch.sh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dev-drprasad/delete-older-releases@v0.3.2
+
+      # --- 修复点 2: 更新旧的 Action 版本 ---
+      - uses: dev-drprasad/delete-older-releases@v1.1.0 # <-- 版本从 v0.3.2 更新到 v1.1.0
         if: steps.build.outputs.skip != 'true'
         with:
           keep_latest: 10
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Release geosite
         if: steps.build.outputs.skip != 'true'
-        uses: softprops/action-gh-release@v1
+        # --- 推荐更新 ---
+        uses: softprops/action-gh-release@v2 # <-- 版本从 v1 更新到 v2
         with:
           tag_name: ${{ steps.build.outputs.tag }}
           files: |
