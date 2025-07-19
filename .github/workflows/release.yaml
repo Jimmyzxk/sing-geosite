@@ -1,5 +1,5 @@
 # .github/workflows/release.yml
-# 最终的、简洁的工作流
+# 最终的、简洁的工作流（已修正 Action 版本号）
 
 name: Build and Release Geosite
 
@@ -17,24 +17,20 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        uses: actions/checkout@v4 # 使用最新的 v4
 
       - name: Setup Go Environment
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v5 # 使用最新的 v5
         with:
           go-version: '^1.22'
       
       # 步骤 1: 运行智能的Go程序
-      # 它会自己决策，并把结果写入到 $GITHUB_OUTPUT
       - name: Build geosite and Generate Outputs
-        id: build # 关键的 id，用于后续步骤引用其输出
-        run: go run . # 只需简单运行，不再需要任何管道和脚本魔法
+        id: build
+        run: go run .
 
       # 步骤 2: 根据Go程序的决策结果，执行后续操作
       - name: Commit and Push Rule Set Updates
-        # 只有在 build 步骤的输出 skip 不为 'true' 时才运行
         if: steps.build.outputs.skip != 'true'
         run: .github/release-rule-set.sh
         env:
@@ -52,9 +48,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # --- 这里是修正过的版本号 ---
       - name: Delete Older Releases
         if: steps.build.outputs.skip != 'true'
-        uses: dev-drprasad/delete-older-releases@v1.1.0
+        uses: dev-drprasad/delete-older-releases@v1.0.0 # <-- 从 v1.1.0 修正为正确的 v1.0.0
         with:
           keep_latest: 10
         env:
@@ -63,9 +60,8 @@ jobs:
       # 步骤 3: 创建新的 GitHub Release
       - name: Create New GitHub Release
         if: steps.build.outputs.skip != 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v2 # 使用最新的 v2
         with:
-          # 使用 build 步骤输出的 tag
           tag_name: ${{ steps.build.outputs.tag }}
           files: |
             geosite.db
