@@ -1,5 +1,5 @@
 # .github/workflows/release.yml
-# 最终的、简洁的工作流（已修正 Action 版本号）
+# 最终的、稳健的工作流（已移除失效的第三方Action）
 
 name: Build and Release Geosite
 
@@ -17,10 +17,10 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4 # 使用最新的 v4
+        uses: actions/checkout@v4
 
       - name: Setup Go Environment
-        uses: actions/setup-go@v5 # 使用最新的 v5
+        uses: actions/setup-go@v5
         with:
           go-version: '^1.22'
       
@@ -48,19 +48,29 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # --- 这里是修正过的版本号 ---
-      - name: Delete Older Releases
+      # --- 这里是全新的、可靠的步骤 ---
+      - name: Delete Older Releases using GitHub CLI
         if: steps.build.outputs.skip != 'true'
-        uses: dev-drprasad/delete-older-releases@v1.0.0 # <-- 从 v1.1.0 修正为正确的 v1.0.0
-        with:
-          keep_latest: 10
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITHUB_REPOSITORY 是一个内置变量，例如 "Jimmyzxk/sing-geosite"
+          GH_REPO: ${{ github.repository }} 
+        run: |
+          echo "Fetching releases to delete..."
+          # 1. 列出所有 releases (最多100个)，按创建时间倒序
+          # 2. 用 `tail -n +11` 跳过最新的10个
+          # 3. 提取出 tag name
+          # 4. 循环遍历并删除
+          gh release list --limit 100 --json tagName --jq '.[].tagName' | \
+            tail -n +11 | \
+            xargs -I {} gh release delete {} --cleanup-tag --yes
+            
+          echo "Old releases have been deleted."
 
       # 步骤 3: 创建新的 GitHub Release
       - name: Create New GitHub Release
         if: steps.build.outputs.skip != 'true'
-        uses: softprops/action-gh-release@v2 # 使用最新的 v2
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.build.outputs.tag }}
           files: |
