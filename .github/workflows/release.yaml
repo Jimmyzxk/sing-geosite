@@ -18,11 +18,12 @@ jobs:
         with:
           go-version: ^1.22
 
-      # --- 修复点 1: 转换Go程序的输出 ---
+      # --- 主要修复点：使用 awk 精确提取并转换输出 ---
       - name: Build geosite
         id: build
+        shell: bash
         run: |
-          go run -v . 2>&1 | sed 's/^::set-output name=\(.*\)::\(.*\)$/\1=\2/' >> $GITHUB_OUTPUT
+          go run -v . 2>&1 | awk -F'::' '/set-output/ {gsub("name=", "", $2); print $2"="$3}' >> $GITHUB_OUTPUT
 
       - name: Release rule sets
         if: steps.build.outputs.skip != 'true'
@@ -42,8 +43,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # --- 修复点 2: 更新旧的 Action 版本 ---
-      - uses: dev-drprasad/delete-older-releases@v1.1.0 # <-- 版本从 v0.3.2 更新到 v1.1.0
+      # --- 其他更新：更新第三方 Action 到无警告的新版本 ---
+      - uses: dev-drprasad/delete-older-releases@v1.1.0
         if: steps.build.outputs.skip != 'true'
         with:
           keep_latest: 10
@@ -52,8 +53,7 @@ jobs:
 
       - name: Release geosite
         if: steps.build.outputs.skip != 'true'
-        # --- 推荐更新 ---
-        uses: softprops/action-gh-release@v2 # <-- 版本从 v1 更新到 v2
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.build.outputs.tag }}
           files: |
